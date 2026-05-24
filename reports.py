@@ -1,3 +1,4 @@
+import html
 from datetime import date
 import db
 from config import CURRENCY_SYMBOL
@@ -7,24 +8,32 @@ def _fmt(amount: float) -> str:
     return f"{amount:,.0f} {CURRENCY_SYMBOL}".replace(",", " ")
 
 
+def _e(text: str) -> str:
+    """Escape HTML special chars in user-supplied strings."""
+    return html.escape(str(text or ""))
+
+
 def _bill_status_line(bill: dict) -> str:
     days = db.days_until(bill["due_date"])
     due_fmt = date.fromisoformat(bill["due_date"]).strftime("%d.%m.%Y")
+    svc = _e(bill["service"])
+    # paid_amount can be None if record was corrupted — fall back to amount
+    paid_amt = bill.get("paid_amount") or bill["amount"]
 
     if bill["status"] == "paid":
         paid_fmt = date.fromisoformat(bill["paid_date"]).strftime("%d.%m.%Y")
-        return f"  ✅ {bill['service']} — {_fmt(bill['paid_amount'])} <i>(оплачено {paid_fmt})</i>"
+        return f"  ✅ {svc} — {_fmt(paid_amt)} <i>(оплачено {paid_fmt})</i>"
     elif days < 0:
-        return f"  🔴 {bill['service']} — {_fmt(bill['amount'])} <b>[просрочено {due_fmt}]</b> #{bill['id']}"
+        return f"  🔴 {svc} — {_fmt(bill['amount'])} <b>[просрочено {due_fmt}]</b> #{bill['id']}"
     elif days <= 3:
-        return f"  🟡 {bill['service']} — {_fmt(bill['amount'])} <b>[до {due_fmt}, осталось {days}д]</b> #{bill['id']}"
+        return f"  🟡 {svc} — {_fmt(bill['amount'])} <b>[до {due_fmt}, осталось {days}д]</b> #{bill['id']}"
     else:
-        return f"  ⏳ {bill['service']} — {_fmt(bill['amount'])} [до {due_fmt}] #{bill['id']}"
+        return f"  ⏳ {svc} — {_fmt(bill['amount'])} [до {due_fmt}] #{bill['id']}"
 
 
 def user_display_name(user: dict) -> str:
-    name = user.get("full_name") or user.get("username") or "Без имени"
-    uname = f" (@{user['username']})" if user.get("username") else ""
+    name = _e(user.get("full_name") or user.get("username") or "Без имени")
+    uname = f" (@{_e(user['username'])})" if user.get("username") else ""
     return f"{name}{uname}"
 
 
@@ -37,7 +46,6 @@ def full_report() -> str:
     total_paid = 0.0
     total_pending = 0.0
     overdue_count = 0
-
     lines = []
 
     for uid, user in users.items():
@@ -46,7 +54,7 @@ def full_report() -> str:
             continue
 
         u_expected = sum(b["amount"] for b in bills)
-        u_paid = sum(b["paid_amount"] or 0 for b in bills if b["status"] == "paid")
+        u_paid = sum((b.get("paid_amount") or 0) for b in bills if b["status"] == "paid")
         u_pending = sum(b["amount"] for b in bills if b["status"] == "pending")
         u_overdue = [b for b in bills if b["status"] == "pending" and db.days_until(b["due_date"]) < 0]
 
@@ -88,7 +96,7 @@ def user_report(user_id: int) -> str:
     paid = [b for b in bills if b["status"] == "paid"]
 
     total_pending = sum(b["amount"] for b in pending)
-    total_paid = sum(b["paid_amount"] or 0 for b in paid)
+    total_paid = sum((b.get("paid_amount") or 0) for b in paid)
 
     text = (
         f"👤 <b>{user_display_name(user)}</b>\n"
@@ -112,11 +120,12 @@ def reminder_message(bill: dict) -> str:
     days = db.days_until(bill["due_date"])
     due_fmt = date.fromisoformat(bill["due_date"]).strftime("%d.%m.%Y")
     amt = _fmt(bill["amount"])
+    svc = _e(bill["service"])
 
     if days < 0:
         return (
             f"🔴 <b>Просроченный платёж!</b>\n\n"
-            f"Услуга: <b>{bill['service']}</b>\n"
+            f"Услуга: <b>{svc}</b>\n"
             f"Сумма: <b>{amt}</b>\n"
             f"Срок истёк: <b>{due_fmt}</b>\n\n"
             f"Просьба оплатить как можно скорее.\n"
@@ -125,14 +134,14 @@ def reminder_message(bill: dict) -> str:
     elif days == 0:
         return (
             f"⚠️ <b>Оплата сегодня!</b>\n\n"
-            f"Услуга: <b>{bill['service']}</b>\n"
+            f"Услуга: <b>{svc}</b>\n"
             f"Сумма: <b>{amt}</b>\n\n"
             f"ID счёта: <code>{bill['id']}</code>"
         )
     else:
         return (
             f"💳 <b>Напоминание об оплате</b>\n\n"
-            f"Услуга: <b>{bill['service']}</b>\n"
+            f"Услуга: <b>{svc}</b>\n"
             f"Сумма: <b>{amt}</b>\n"
             f"Срок оплаты: <b>{due_fmt}</b> (через {days} дн.)\n\n"
             f"ID счёта: <code>{bill['id']}</code>"

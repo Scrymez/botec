@@ -50,7 +50,7 @@ def service_keyboard() -> InlineKeyboardMarkup:
 def user_list_keyboard(uid: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("➕ Счёт",       callback_data=f"u_newbill:{uid}"),
+            InlineKeyboardButton("➕ Счёт",       callback_data=f"nb_pre:{uid}"),
             InlineKeyboardButton("📋 Счета",      callback_data=f"u_bills:{uid}"),
         ],
         [

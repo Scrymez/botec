@@ -19,6 +19,8 @@ log = logging.getLogger(__name__)
 # ConversationHandler states
 NB_USER, NB_SERVICE, NB_CUSTOM_SERVICE, NB_AMOUNT, NB_DATE, NB_DATE_TEXT, NB_CONFIRM = range(7)
 
+MAX_AMOUNT = 10_000_000
+
 
 def is_admin(uid: int) -> bool:
     return uid in ADMIN_IDS
@@ -39,7 +41,7 @@ async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reports.full_report(), parse_mode="HTML")
 
 
-# ── /users — with inline action buttons ──────────────────────────────────────
+# ── /users ────────────────────────────────────────────────────────────────────
 
 async def cmd_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await guard(update):
@@ -50,17 +52,14 @@ async def cmd_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "Пользователей нет.\n\nДобавь: /adduser <telegram_id> [имя]"
         )
         return
-
     for uid, user in users.items():
         pending = [b for b in user["bills"] if b["status"] == "pending"]
         paid    = [b for b in user["bills"] if b["status"] == "paid"]
         overdue = [b for b in pending if db.days_until(b["due_date"]) < 0]
-
         status_line = f"⏳ {len(pending)} ожидают"
         if overdue:
             status_line += f"  🔴 {len(overdue)} просроч."
         status_line += f"  ✅ {len(paid)} оплачено"
-
         await update.message.reply_text(
             f"👤 <b>{reports.user_display_name(user)}</b>\n{status_line}",
             reply_markup=keyboards.user_list_keyboard(uid),
@@ -68,7 +67,7 @@ async def cmd_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
 
-# ── /pending — with [✅ Оплачено] button per bill ────────────────────────────
+# ── /pending ──────────────────────────────────────────────────────────────────
 
 async def cmd_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await guard(update):
@@ -77,9 +76,9 @@ async def cmd_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not items:
         await update.message.reply_text("✅ Все счета оплачены!")
         return
-
-    await update.message.reply_text(f"⏳ <b>Неоплаченных счетов: {len(items)}</b>", parse_mode="HTML")
-
+    await update.message.reply_text(
+        f"⏳ <b>Неоплаченных счетов: {len(items)}</b>", parse_mode="HTML"
+    )
     for item in sorted(items, key=lambda x: x["bill"]["due_date"]):
         u = item["user"]
         b = item["bill"]
@@ -87,10 +86,9 @@ async def cmd_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         due_fmt = date.fromisoformat(b["due_date"]).strftime("%d.%m.%Y")
         flag = "🔴" if days < 0 else ("🟡" if days <= 3 else "⏳")
         day_str = f"просрочено на {-days}д" if days < 0 else f"через {days}д"
-
         await update.message.reply_text(
             f"{flag} <b>{reports.user_display_name(u)}</b>\n"
-            f"   {b['service']} — {reports._fmt(b['amount'])}\n"
+            f"   {reports._e(b['service'])} — {reports._fmt(b['amount'])}\n"
             f"   Срок: {due_fmt} ({day_str})  #{b['id']}",
             reply_markup=keyboards.bill_keyboard(item["user_id"], b["id"]),
             parse_mode="HTML",
@@ -116,11 +114,10 @@ async def cmd_adduser(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ ID должен быть числом.")
         return
-
-    name = " ".join(args[1:]) if len(args) > 1 else str(uid)
+    name = " ".join(args[1:])[:100] if len(args) > 1 else str(uid)
     db.upsert_user(uid, "", name, uid)
     await update.message.reply_text(
-        f"✅ Пользователь добавлен\nID: <code>{uid}</code>  Имя: {name}",
+        f"✅ Пользователь добавлен\nID: <code>{uid}</code>  Имя: {reports._e(name)}",
         parse_mode="HTML",
     )
 
@@ -148,40 +145,68 @@ async def cmd_remindall(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             errors += 1
     msg = f"📨 Напоминания отправлены: {sent}"
     if errors:
-        msg += f"\n⚠️ Ошибок: {errors}"
+        msg += f"\n⚠️ Ошибок: {errors} (пользователь не писал боту?)"
     await update.message.reply_text(msg)
 
 
-# ── /newbill — full inline wizard ─────────────────────────────────────────────
+# ── /newbill + nb_pre — ConversationHandler ───────────────────────────────────
+
+def _user_select_keyboard(preselect_uid: str | None = None) -> tuple[InlineKeyboardMarkup, bool]:
+    """Returns (keyboard, has_users)."""
+    users = db.get_all_users()
+    if not users:
+        return None, False
+    keyboard = [
+        [InlineKeyboardButton(reports.user_display_name(u), callback_data=f"nb_user:{uid}")]
+        for uid, u in users.items()
+    ]
+    keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="nb_cancel")])
+    return InlineKeyboardMarkup(keyboard), True
+
 
 async def cmd_newbill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Entry: /newbill command — shows user selection."""
     if not is_admin(update.effective_user.id):
         if update.message:
             await update.message.reply_text("⛔ Нет доступа.")
         return ConversationHandler.END
 
-    users = db.get_all_users()
-    if not users:
-        msg = update.message or update.callback_query.message
-        await msg.reply_text("Сначала добавь пользователей: /adduser <id> <имя>")
+    kb, has_users = _user_select_keyboard()
+    if not has_users:
+        target = update.message or update.callback_query.message
+        await target.reply_text("Сначала добавь пользователей: /adduser <id> <имя>")
         return ConversationHandler.END
-
-    keyboard = [
-        [InlineKeyboardButton(
-            reports.user_display_name(u),
-            callback_data=f"nb_user:{uid}"
-        )]
-        for uid, u in users.items()
-    ]
-    keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="nb_cancel")])
 
     target = update.message if update.message else update.callback_query.message
     await target.reply_text(
         "💳 <b>Новый счёт</b>\n\nВыбери пользователя:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=kb,
         parse_mode="HTML",
     )
     return NB_USER
+
+
+async def nb_pre_selected(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Entry: '➕ Счёт' button from user list — user already selected, skip to service."""
+    query = update.callback_query
+    if not is_admin(update.effective_user.id):
+        await query.answer("⛔ Нет доступа", show_alert=True)
+        return ConversationHandler.END
+
+    await query.answer()
+    uid = query.data.split(":")[1]
+    user = db.get_user(int(uid))
+    if not user:
+        await query.edit_message_text("❌ Пользователь не найден.")
+        return ConversationHandler.END
+
+    ctx.user_data.update({"nb_uid": uid, "nb_name": reports.user_display_name(user)})
+    await query.edit_message_text(
+        f"👤 <b>{ctx.user_data['nb_name']}</b>\n\nВыбери услугу:",
+        reply_markup=keyboards.service_keyboard(),
+        parse_mode="HTML",
+    )
+    return NB_SERVICE
 
 
 async def nb_got_user(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -190,13 +215,11 @@ async def nb_got_user(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if query.data == "nb_cancel":
         await query.edit_message_text("❌ Отменено.")
         return ConversationHandler.END
-
     uid = query.data.split(":")[1]
     user = db.get_user(int(uid))
     if not user:
         await query.edit_message_text("❌ Пользователь не найден.")
         return ConversationHandler.END
-
     ctx.user_data.update({"nb_uid": uid, "nb_name": reports.user_display_name(user)})
     await query.edit_message_text(
         f"👤 <b>{ctx.user_data['nb_name']}</b>\n\nВыбери услугу:",
@@ -213,16 +236,14 @@ async def nb_got_service(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Отменено.")
         ctx.user_data.clear()
         return ConversationHandler.END
-
     val = query.data.split(":", 1)[1]
     if val == "__custom__":
-        await query.edit_message_text("✏️ Введи название услуги:")
+        await query.edit_message_text("✏️ Введи название услуги (до 100 символов):")
         return NB_CUSTOM_SERVICE
-
     ctx.user_data["nb_service"] = val
     await query.edit_message_text(
         f"👤 {ctx.user_data['nb_name']}\n"
-        f"🔧 Услуга: <b>{val}</b>\n\n"
+        f"🔧 Услуга: <b>{reports._e(val)}</b>\n\n"
         f"Введи сумму (только цифры):",
         parse_mode="HTML",
     )
@@ -230,21 +251,32 @@ async def nb_got_service(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def nb_got_custom_service(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["nb_service"] = update.message.text.strip()
+    name = update.message.text.strip()[:100]
+    if not name:
+        await update.message.reply_text("❌ Название не может быть пустым.")
+        return NB_CUSTOM_SERVICE
+    ctx.user_data["nb_service"] = name
     await update.message.reply_text(
-        f"🔧 Услуга: <b>{ctx.user_data['nb_service']}</b>\n\nВведи сумму (только цифры):",
+        f"🔧 Услуга: <b>{reports._e(name)}</b>\n\nВведи сумму (только цифры):",
         parse_mode="HTML",
     )
     return NB_AMOUNT
 
 
 async def nb_got_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    raw = update.message.text.strip().replace(",", ".").replace(" ", "")
     try:
-        amount = float(update.message.text.strip().replace(",", ".").replace(" ", ""))
-    except ValueError:
-        await update.message.reply_text("❌ Только цифры. Например: 1500")
+        amount = float(raw)
+        if amount <= 0:
+            raise ValueError("non-positive")
+        if amount > MAX_AMOUNT:
+            raise ValueError("too large")
+    except ValueError as e:
+        if "too large" in str(e):
+            await update.message.reply_text(f"❌ Сумма не может превышать {reports._fmt(MAX_AMOUNT)}")
+        else:
+            await update.message.reply_text("❌ Введи положительное число. Например: 1500")
         return NB_AMOUNT
-
     ctx.user_data["nb_amount"] = amount
     await update.message.reply_text(
         f"💰 Сумма: <b>{reports._fmt(amount)}</b>\n\nВыбери срок оплаты:",
@@ -261,15 +293,14 @@ async def nb_got_date_btn(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Отменено.")
         ctx.user_data.clear()
         return ConversationHandler.END
-
     choice = query.data.split(":")[1]
     if choice == "manual":
         await query.edit_message_text("📅 Введи дату в формате ДД.ММ.ГГГГ:")
         return NB_DATE_TEXT
-
     due = date.today() + timedelta(days=int(choice))
     ctx.user_data["nb_due"] = due.isoformat()
-    return await _nb_show_confirm(query.message, ctx, edit=False)
+    await query.message.reply_text(**(await _nb_confirm_kwargs(ctx)))
+    return NB_CONFIRM
 
 
 async def nb_got_date_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -279,17 +310,24 @@ async def nb_got_date_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("❌ Неверный формат. Введи ДД.ММ.ГГГГ:")
         return NB_DATE_TEXT
+    # FIX: reject past dates
+    if due < date.today():
+        await update.message.reply_text(
+            f"❌ Дата {due.strftime('%d.%m.%Y')} уже прошла. Введи будущую дату:"
+        )
+        return NB_DATE_TEXT
     ctx.user_data["nb_due"] = due.isoformat()
-    return await _nb_show_confirm(update.message, ctx, edit=False)
+    await update.message.reply_text(**(await _nb_confirm_kwargs(ctx)))
+    return NB_CONFIRM
 
 
-async def _nb_show_confirm(msg, ctx: ContextTypes.DEFAULT_TYPE, edit=False):
+async def _nb_confirm_kwargs(ctx: ContextTypes.DEFAULT_TYPE) -> dict:
     d = ctx.user_data
     due_fmt = date.fromisoformat(d["nb_due"]).strftime("%d.%m.%Y")
     text = (
         f"📋 <b>Подтверди счёт:</b>\n\n"
         f"👤 {d['nb_name']}\n"
-        f"🔧 {d['nb_service']}\n"
+        f"🔧 {reports._e(d['nb_service'])}\n"
         f"💰 {reports._fmt(d['nb_amount'])}\n"
         f"📅 до {due_fmt}\n"
     )
@@ -297,17 +335,12 @@ async def _nb_show_confirm(msg, ctx: ContextTypes.DEFAULT_TYPE, edit=False):
         InlineKeyboardButton("✅ Создать", callback_data="nb_confirm:yes"),
         InlineKeyboardButton("❌ Отмена",  callback_data="nb_confirm:no"),
     ]])
-    if edit:
-        await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    else:
-        await msg.reply_text(text, reply_markup=kb, parse_mode="HTML")
-    return NB_CONFIRM
+    return {"text": text, "reply_markup": kb, "parse_mode": "HTML"}
 
 
 async def nb_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     if query.data == "nb_confirm:no":
         await query.edit_message_text("❌ Отменено.")
         ctx.user_data.clear()
@@ -319,9 +352,7 @@ async def nb_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Ошибка создания счёта.")
         return ConversationHandler.END
 
-    await query.edit_message_text(
-        f"✅ Счёт создан  #{bill['id']}", parse_mode="HTML"
-    )
+    await query.edit_message_text(f"✅ Счёт создан  #{bill['id']}")
 
     user = db.get_user(int(d["nb_uid"]))
     if user and user.get("chat_id"):
@@ -331,7 +362,7 @@ async def nb_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 chat_id=user["chat_id"],
                 text=(
                     f"💳 <b>Новый счёт к оплате</b>\n\n"
-                    f"Услуга: <b>{bill['service']}</b>\n"
+                    f"Услуга: <b>{reports._e(bill['service'])}</b>\n"
                     f"Сумма: <b>{reports._fmt(bill['amount'])}</b>\n"
                     f"Срок оплаты: <b>{due_fmt}</b>\n\n"
                     f"ID счёта: <code>{bill['id']}</code>"
@@ -358,7 +389,8 @@ def newbill_handler() -> ConversationHandler:
     return ConversationHandler(
         entry_points=[
             CommandHandler("newbill", cmd_newbill),
-            CallbackQueryHandler(cmd_newbill, pattern="^nb_start$"),
+            # FIX: '➕ Счёт' button from user list — goes straight to service step
+            CallbackQueryHandler(nb_pre_selected, pattern="^nb_pre:"),
         ],
         states={
             NB_USER: [

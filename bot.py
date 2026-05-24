@@ -1,6 +1,9 @@
 import asyncio
 import logging
+import os
+import sys
 from telegram import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat
+from telegram.error import Conflict, NetworkError
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters,
@@ -23,6 +26,8 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
+PID_FILE = "bot.pid"
+
 USER_COMMANDS = [
     BotCommand("start",   "🚀 Регистрация / главное меню"),
     BotCommand("status",  "💳 Мои счета к оплате"),
@@ -37,6 +42,41 @@ ADMIN_COMMANDS = USER_COMMANDS + [
     BotCommand("remindall", "📨 Напомнить всем должникам"),
     BotCommand("adduser",   "👤 Добавить пользователя вручную"),
 ]
+
+
+def check_pid_file():
+    """Prevent multiple instances."""
+    if os.path.exists(PID_FILE):
+        try:
+            old_pid = int(open(PID_FILE).read().strip())
+            os.kill(old_pid, 0)  # check if process alive
+            log.error("Бот уже запущен (PID %d). Останови его перед запуском нового.", old_pid)
+            sys.exit(1)
+        except (ProcessLookupError, ValueError):
+            pass  # old PID dead, overwrite
+    with open(PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+
+
+def remove_pid_file():
+    try:
+        os.remove(PID_FILE)
+    except FileNotFoundError:
+        pass
+
+
+async def error_handler(update, context):
+    err = context.error
+    if isinstance(err, Conflict):
+        log.critical(
+            "⚠️  КОНФЛИКТ ТОКЕНА: другое приложение использует тот же токен бота! "
+            "Найди и останови его. Бот продолжает работу."
+        )
+        return
+    if isinstance(err, NetworkError):
+        log.warning("Сетевая ошибка (временно): %s", err)
+        return
+    log.error("Необработанная ошибка: %s", err, exc_info=context.error)
 
 
 async def post_init(app: Application):
@@ -57,7 +97,12 @@ def main():
     if not ADMIN_IDS:
         log.warning("ADMIN_IDS не заданы!")
 
+    check_pid_file()
+
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+
+    # Error handler
+    app.add_error_handler(error_handler)
 
     # /newbill wizard (must be before generic handlers)
     app.add_handler(newbill_handler())
@@ -75,13 +120,16 @@ def main():
     # Inline button callbacks (u_*, b_*)
     app.add_handler(CallbackQueryHandler(handle_callback, pattern="^(u_|b_)"))
 
-    # Reply keyboard text buttons
+    # Reply keyboard text buttons & custom amount input
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_button))
 
     scheduler.setup(app)
 
     log.info("Бот запущен. Администраторы: %s", ADMIN_IDS)
-    app.run_polling(drop_pending_updates=True)
+    try:
+        app.run_polling(drop_pending_updates=True)
+    finally:
+        remove_pid_file()
 
 
 if __name__ == "__main__":

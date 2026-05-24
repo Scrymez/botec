@@ -1,7 +1,7 @@
 import json
 import os
 import uuid
-from datetime import date, datetime
+from datetime import date
 from config import DB_PATH, CURRENCY
 
 _DEFAULT = {
