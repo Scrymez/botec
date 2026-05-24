@@ -1,0 +1,86 @@
+name: Deploy Botec
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to deploy, for example main or a commit SHA"
+        required: false
+        default: "main"
+
+concurrency:
+  group: botec-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check VPS secrets
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          test -n "$VPS_HOST" || (echo "Missing VPS_HOST secret" && exit 1)
+          test -n "$VPS_USER" || (echo "Missing VPS_USER secret" && exit 1)
+          test -n "$VPS_SSH_KEY" || (echo "Missing VPS_SSH_KEY secret" && exit 1)
+
+      - name: Resolve ref
+        id: deploy_ref
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ref=${{ github.event.inputs.ref }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout deploy ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.deploy_ref.outputs.ref }}
+
+      - name: Build deploy archive
+        id: archive
+        run: |
+          SHA="$(git rev-parse HEAD)"
+          ARCHIVE="botec-${SHA}.tar.gz"
+          ARCHIVE_PATH="$RUNNER_TEMP/$ARCHIVE"
+          tar \
+            --exclude='.git' \
+            --exclude='.env' \
+            --exclude='venv' \
+            --exclude='.venv' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='bot.log' \
+            --exclude='data/db.json' \
+            -czf "$ARCHIVE_PATH" .
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "archive_path=$ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
+          echo "remote_path=/tmp/$ARCHIVE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload archive
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          source: ${{ steps.archive.outputs.archive_path }}
+          target: /tmp
+          strip_components: 2
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          script_stop: true
+          script: |
+            sudo /opt/telegram-bots/bin/deploy-python-bot-archive botec "${{ steps.archive.outputs.remote_path }}" "${{ steps.archive.outputs.sha }}" bot.py
