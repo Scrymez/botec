@@ -13,10 +13,10 @@ from config import BOT_TOKEN, ADMIN_IDS
 from handlers.user import cmd_start, cmd_status, cmd_history, handle_menu_button
 from handlers.admin import (
     cmd_report, cmd_users, cmd_pending,
-    cmd_adduser, cmd_remindall,
+    cmd_adduser, cmd_remindall, cmd_bots,
     newbill_handler,
 )
-from handlers.callbacks import handle_callback
+from handlers.callbacks import handle_callback, handle_bot_callback
 import scheduler
 
 logging.basicConfig(
@@ -41,6 +41,7 @@ ADMIN_COMMANDS = USER_COMMANDS + [
     BotCommand("users",     "👥 Список пользователей"),
     BotCommand("remindall", "📨 Напомнить всем должникам"),
     BotCommand("adduser",   "👤 Добавить пользователя вручную"),
+    BotCommand("bots",      "🤖 Управление ботами"),
 ]
 
 
@@ -116,9 +117,13 @@ def main():
     app.add_handler(CommandHandler("pending",   cmd_pending))
     app.add_handler(CommandHandler("adduser",   cmd_adduser))
     app.add_handler(CommandHandler("remindall", cmd_remindall))
+    app.add_handler(CommandHandler("bots", cmd_bots))
 
     # Inline button callbacks (u_*, b_*)
     app.add_handler(CallbackQueryHandler(handle_callback, pattern="^(u_|b_)"))
+
+    # Bots management callbacks (bm_*, ubn_*)
+    app.add_handler(CallbackQueryHandler(handle_bot_callback, pattern="^(bm_|ubn_)"))
 
     # Reply keyboard text buttons & custom amount input
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_button))

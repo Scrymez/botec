@@ -80,8 +80,10 @@ async def cmd_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def handle_menu_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # First check if waiting for custom paid amount
-    from handlers.callbacks import handle_custom_paid_amount
+    from handlers.callbacks import handle_custom_paid_amount, handle_bot_username_input
     if await handle_custom_paid_amount(update, ctx):
+        return
+    if await handle_bot_username_input(update, ctx):
         return
 
     text = update.message.text
@@ -127,3 +129,10 @@ async def handle_menu_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif text == "📜 История платежей":
         await cmd_history(update, ctx)
+
+    elif text == "🤖 Боты":
+        if is_adm:
+            from handlers.admin import cmd_bots
+            await cmd_bots(update, ctx)
+        else:
+            await update.message.reply_text("⛔ Нет доступа.")

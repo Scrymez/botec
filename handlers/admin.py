@@ -149,6 +149,20 @@ async def cmd_remindall(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 
+# ── /bots ─────────────────────────────────────────────────────────────────────
+
+async def cmd_bots(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await guard(update):
+        return
+    bots = db.get_all_bots()
+    if not bots:
+        text = "🤖 Боты не добавлены."
+    else:
+        lines = "\n".join(f"• @{username}" for username in bots)
+        text = f"🤖 <b>Зарегистрированные боты:</b>\n{lines}"
+    await update.message.reply_text(text, reply_markup=keyboards.bots_keyboard(), parse_mode="HTML")
+
+
 # ── /newbill + nb_pre — ConversationHandler ───────────────────────────────────
 
 def _user_select_keyboard(preselect_uid: str | None = None) -> tuple[InlineKeyboardMarkup, bool]:

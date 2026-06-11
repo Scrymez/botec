@@ -8,7 +8,8 @@ ADMIN_MENU = ReplyKeyboardMarkup(
     [
         ["📊 Отчёт по бюджету", "⏳ Неоплаченные счета"],
         ["👥 Пользователи",     "➕ Новый счёт"],
-        ["📨 Напомнить всем",   "💳 Мой статус"],
+        ["📨 Напомнить всем",   "🤖 Боты"],
+        ["💳 Мой статус"],
     ],
     resize_keyboard=True,
     input_field_placeholder="Выбери действие...",
@@ -56,6 +57,9 @@ def user_list_keyboard(uid: str) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("📨 Напомнить",  callback_data=f"u_remind:{uid}"),
             InlineKeyboardButton("🗑 Удалить",    callback_data=f"u_del_ask:{uid}"),
+        ],
+        [
+            InlineKeyboardButton("🤖 Привязать бота", callback_data=f"ubn_pick:{uid}"),
         ],
     ])
 
@@ -106,3 +110,24 @@ def due_date_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📅 Ввести дату вручную", callback_data="nb_date:manual")],
         [InlineKeyboardButton("❌ Отмена", callback_data="nb_cancel")],
     ])
+
+# ── Bots management ────────────────────────────────────────────────────────────
+
+def bots_keyboard() -> InlineKeyboardMarkup:
+    bots = db.get_all_bots()
+    rows = []
+    for username in bots:
+        rows.append([InlineKeyboardButton(f"🗑 @{username}", callback_data=f"bm_del:{username}")])
+    rows.append([InlineKeyboardButton("➕ Добавить бота", callback_data="bm_add")])
+    return InlineKeyboardMarkup(rows)
+
+
+def user_bot_select_keyboard(uid: str) -> InlineKeyboardMarkup:
+    bots = db.get_all_bots()
+    rows = []
+    for username in bots:
+        rows.append([InlineKeyboardButton(f"@{username}", callback_data=f"ubn_set:{uid}:{username}")])
+    if not bots:
+        rows.append([InlineKeyboardButton("Нет ботов — добавь в «🤖 Боты»", callback_data="bm_list")])
+    rows.append([InlineKeyboardButton("❌ Отвязать", callback_data=f"ubn_set:{uid}:__none__")])
+    return InlineKeyboardMarkup(rows)

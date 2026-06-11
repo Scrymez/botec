@@ -202,6 +202,80 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Отменено.")
 
 
+# ── Bots management actions ─────────────────────────────────────────────────
+
+async def handle_bot_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+
+    if not is_admin(update.effective_user.id):
+        await query.answer("⛔ Нет доступа", show_alert=True)
+        return
+
+    if data == "bm_list":
+        await query.answer()
+
+    elif data == "bm_add":
+        await query.answer()
+        ctx.user_data["awaiting_bot_username"] = True
+        await query.edit_message_text(
+            "✏️ Пришли username бота, например: @name_bot"
+        )
+
+    elif data.startswith("bm_del:"):
+        await query.answer()
+        username = data.split(":", 1)[1]
+        db.remove_bot(username)
+        bots = db.get_all_bots()
+        text = "🤖 Боты не добавлены." if not bots else (
+            "🤖 <b>Зарегистрированные боты:</b>\n" + "\n".join(f"• @{u}" for u in bots)
+        )
+        await query.edit_message_text(text, reply_markup=keyboards.bots_keyboard(), parse_mode="HTML")
+
+    elif data.startswith("ubn_pick:"):
+        await query.answer()
+        uid = data.split(":", 1)[1]
+        await query.edit_message_text(
+            "🤖 Выбери бота для привязки пользователя:",
+            reply_markup=keyboards.user_bot_select_keyboard(uid),
+        )
+
+    elif data.startswith("ubn_set:"):
+        await query.answer()
+        _, uid, username = data.split(":")
+        username = None if username == "__none__" else username
+        db.set_user_bot(int(uid), username)
+        user = db.get_user(int(uid))
+        label = f"@{username}" if username else "—"
+        await query.edit_message_text(
+            f"✅ {reports.user_display_name(user)}\nПривязанный бот: {label}",
+            parse_mode="HTML",
+        )
+
+
+async def handle_bot_username_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Called from text handler. Returns True if message was consumed.
+    Handles @username input after pressing '➕ Добавить бота'.
+    """
+    if not ctx.user_data.get("awaiting_bot_username"):
+        return False
+
+    text = update.message.text.strip()
+    username = text.lstrip("@").strip()
+    if not username or " " in username:
+        await update.message.reply_text("❌ Введи корректный username, например: @name_bot")
+        return True
+
+    ctx.user_data.pop("awaiting_bot_username", None)
+    db.add_bot(username)
+    await update.message.reply_text(
+        f"✅ Бот @{username} добавлен.",
+        reply_markup=keyboards.bots_keyboard(),
+    )
+    return True
+
+
 async def handle_custom_paid_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
     """
     Called from text handler. Returns True if message was consumed.

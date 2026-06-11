@@ -34,7 +34,8 @@ def _bill_status_line(bill: dict) -> str:
 def user_display_name(user: dict) -> str:
     name = _e(user.get("full_name") or user.get("username") or "Без имени")
     uname = f" (@{_e(user['username'])})" if user.get("username") else ""
-    return f"{name}{uname}"
+    bot_tag = f" [🤖 @{_e(user['bot'])}]" if user.get("bot") else ""
+    return f"{name}{uname}{bot_tag}"
 
 
 def full_report() -> str:
